@@ -76,7 +76,7 @@ namespace StackExchange.Redis
         {
             lastWriteTickCount = lastReadTickCount = Environment.TickCount;
             lastBeatTickCount = 0;
-            consecutiveTimeoutsTickCount = 0;
+            consecutiveTimeoutsSinceTickCount = 0;
             connectionType = bridge.ConnectionType;
             _bridge = new WeakReference(bridge);
             ChannelPrefix = bridge.Multiplexer.RawConfig.ChannelPrefix;
@@ -381,7 +381,7 @@ namespace StackExchange.Redis
                             add("Outstanding-Responses", "outstanding", GetSentAwaitingResponseCount().ToString());
                             add("Last-Read", "last-read", (unchecked(now - lastRead) / 1000) + "s ago");
                             add("Last-Write", "last-write", (unchecked(now - lastWrite) / 1000) + "s ago");
-                            if(unansweredWriteTime != 0) add("Unanswered-Write", "unanswered-write", (unchecked(now - unansweredWriteTime) / 1000) + "s ago");
+                            if (unansweredWriteTime != 0) add("Unanswered-Write", "unanswered-write", (unchecked(now - unansweredWriteTime) / 1000) + "s ago");
                             add("Keep-Alive", "keep-alive", bridge.ServerEndPoint?.WriteEverySeconds + "s");
                             add("Previous-Physical-State", "state", oldState.ToString());
                             add("Manager", "mgr", bridge.Multiplexer.SocketManager?.GetState());
@@ -593,7 +593,7 @@ namespace StackExchange.Redis
             }
         }
 
-        private int consecutiveTimeoutsTickCount;
+        private int consecutiveTimeoutsSinceTickCount;
         private readonly int consecutiveTimeoutsTresholdMilliseconds = 10000;
 
         internal void OnBridgeHeartbeat()
@@ -610,14 +610,17 @@ namespace StackExchange.Redis
 
                     var server = bridge?.ServerEndPoint;
 
-                    var millisecondsTaken = unchecked(now - consecutiveTimeoutsTickCount);
-                    if (millisecondsTaken >= consecutiveTimeoutsTresholdMilliseconds)
+                    if (consecutiveTimeoutsSinceTickCount > 0)
                     {
-                        RecordConnectionFailed(
-                            ConnectionFailureType.SocketFailure,
-                            ExceptionFactory.ConnectionFailure(false, ConnectionFailureType.SocketFailure, "consecutive timeouts treshold reached", server));
-                        bridge.Multiplexer?.Trace("too many consecutive timeouts");
-                        return;
+                        var millisecondsTaken = unchecked(now - consecutiveTimeoutsSinceTickCount);
+                        if (millisecondsTaken >= consecutiveTimeoutsTresholdMilliseconds)
+                        {
+                            RecordConnectionFailed(
+                                ConnectionFailureType.SocketFailure,
+                                ExceptionFactory.ConnectionFailure(false, ConnectionFailureType.SocketFailure, "consecutive timeouts treshold reached", server));
+                            bridge.Multiplexer?.Trace("too many consecutive timeouts");
+                            return;
+                        }
                     }
 
                     var timeout = bridge.Multiplexer.AsyncTimeoutMilliseconds;
@@ -626,7 +629,7 @@ namespace StackExchange.Redis
                         if (msg.HasAsyncTimedOut(now, timeout, out var elapsed))
                         {
                             bool haveDeltas = msg.TryGetPhysicalState(out _, out _, out long sentDelta, out var receivedDelta) && sentDelta >= 0 && receivedDelta >= 0;
-                            if (!haveDeltas || (haveDeltas && receivedDelta == 0)) Interlocked.CompareExchange(ref consecutiveTimeoutsTickCount, now, 0);
+                            if (!haveDeltas || (haveDeltas && receivedDelta == 0)) Interlocked.CompareExchange(ref consecutiveTimeoutsSinceTickCount, now, 0);
 
                             var timeoutEx = ExceptionFactory.Timeout(bridge.Multiplexer, haveDeltas
                                 ? $"Timeout awaiting response (outbound={sentDelta >> 10}KiB, inbound={receivedDelta >> 10}KiB, {elapsed}ms elapsed, timeout is {timeout}ms)"
@@ -637,7 +640,7 @@ namespace StackExchange.Redis
                         }
                         else
                         {
-                            Interlocked.Exchange(ref consecutiveTimeoutsTickCount, 0);
+                            Interlocked.Exchange(ref consecutiveTimeoutsSinceTickCount, 0);
                         }
                         // note: it is important that we **do not** remove the message unless we're tearing down the socket; that
                         // would disrupt the chain for MatchResult; we just pre-emptively abort the message from the caller's
@@ -961,7 +964,7 @@ namespace StackExchange.Redis
         internal long MaxFlushBytes => _maxFlushBytes;
 #endif
 
-    private static readonly ReadOnlyMemory<byte> NullBulkString = Encoding.ASCII.GetBytes("$-1\r\n"), EmptyBulkString = Encoding.ASCII.GetBytes("$0\r\n\r\n");
+        private static readonly ReadOnlyMemory<byte> NullBulkString = Encoding.ASCII.GetBytes("$-1\r\n"), EmptyBulkString = Encoding.ASCII.GetBytes("$0\r\n\r\n");
 
         private static void WriteUnifiedBlob(PipeWriter writer, byte[] value)
         {
@@ -1453,7 +1456,7 @@ namespace StackExchange.Redis
         internal void GetHeadMessages(out Message now, out Message next)
         {
             now = _activeMessage;
-            lock(_writtenAwaitingResponse)
+            lock (_writtenAwaitingResponse)
             {
                 next = _writtenAwaitingResponse.Count == 0 ? null : _writtenAwaitingResponse.Peek();
             }
@@ -1637,7 +1640,7 @@ namespace StackExchange.Redis
                 if (oversized.IsSingleSegment)
                 {
                     var span = oversized.FirstSpan;
-                    for(int i = 0; i < span.Length; i++)
+                    for (int i = 0; i < span.Length; i++)
                     {
                         if (!(span[i] = TryParseResult(arena, in buffer, ref reader, includeDetailInExceptions, server)).HasValue)
                         {
@@ -1647,7 +1650,7 @@ namespace StackExchange.Redis
                 }
                 else
                 {
-                    foreach(var span in oversized.Spans)
+                    foreach (var span in oversized.Spans)
                     {
                         for (int i = 0; i < span.Length; i++)
                         {

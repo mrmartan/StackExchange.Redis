@@ -76,6 +76,7 @@ namespace StackExchange.Redis
         {
             lastWriteTickCount = lastReadTickCount = Environment.TickCount;
             lastBeatTickCount = 0;
+            consecutiveTimeoutsTickCount = 0;
             connectionType = bridge.ConnectionType;
             _bridge = new WeakReference(bridge);
             ChannelPrefix = bridge.Multiplexer.RawConfig.ChannelPrefix;
@@ -592,6 +593,9 @@ namespace StackExchange.Redis
             }
         }
 
+        private int consecutiveTimeoutsTickCount;
+        private readonly int consecutiveTimeoutsTresholdMilliseconds = 10000;
+
         internal void OnBridgeHeartbeat()
         {
             var now = Environment.TickCount;
@@ -605,18 +609,35 @@ namespace StackExchange.Redis
                     if (bridge == null) return;
 
                     var server = bridge?.ServerEndPoint;
+
+                    var millisecondsTaken = unchecked(now - consecutiveTimeoutsTickCount);
+                    if (millisecondsTaken >= consecutiveTimeoutsTresholdMilliseconds)
+                    {
+                        RecordConnectionFailed(
+                            ConnectionFailureType.SocketFailure,
+                            ExceptionFactory.ConnectionFailure(false, ConnectionFailureType.SocketFailure, "consecutive timeouts treshold reached", server));
+                        bridge.Multiplexer?.Trace("too many consecutive timeouts");
+                        return;
+                    }
+
                     var timeout = bridge.Multiplexer.AsyncTimeoutMilliseconds;
                     foreach (var msg in _writtenAwaitingResponse)
                     {
                         if (msg.HasAsyncTimedOut(now, timeout, out var elapsed))
                         {
                             bool haveDeltas = msg.TryGetPhysicalState(out _, out _, out long sentDelta, out var receivedDelta) && sentDelta >= 0 && receivedDelta >= 0;
+                            if (!haveDeltas || (haveDeltas && receivedDelta == 0)) Interlocked.CompareExchange(ref consecutiveTimeoutsTickCount, now, 0);
+
                             var timeoutEx = ExceptionFactory.Timeout(bridge.Multiplexer, haveDeltas
                                 ? $"Timeout awaiting response (outbound={sentDelta >> 10}KiB, inbound={receivedDelta >> 10}KiB, {elapsed}ms elapsed, timeout is {timeout}ms)"
                                 : $"Timeout awaiting response ({elapsed}ms elapsed, timeout is {timeout}ms)", msg, server);
                             bridge.Multiplexer?.OnMessageFaulted(msg, timeoutEx);
                             msg.SetExceptionAndComplete(timeoutEx, bridge); // tell the message that it is doomed
                             bridge.Multiplexer.OnAsyncTimeout();
+                        }
+                        else
+                        {
+                            Interlocked.Exchange(ref consecutiveTimeoutsTickCount, 0);
                         }
                         // note: it is important that we **do not** remove the message unless we're tearing down the socket; that
                         // would disrupt the chain for MatchResult; we just pre-emptively abort the message from the caller's

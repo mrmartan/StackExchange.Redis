@@ -67,6 +67,7 @@ namespace StackExchange.Redis
                 AbortOnConnectFail = "abortConnect",
                 AllowAdmin = "allowAdmin",
                 AsyncTimeout = "asyncTimeout",
+                AsyncConnectionTimeout = "asyncConnectionTimeout",
                 ChannelPrefix = "channelPrefix",
                 ConfigChannel = "configChannel",
                 ConfigCheckSeconds = "configCheckSeconds",
@@ -95,6 +96,7 @@ namespace StackExchange.Redis
                 AbortOnConnectFail,
                 AllowAdmin,
                 AsyncTimeout,
+                AsyncConnectionTimeout,
                 ChannelPrefix,
                 ClientName,
                 ConfigChannel,
@@ -136,7 +138,7 @@ namespace StackExchange.Redis
 
         private Version defaultVersion;
 
-        private int? keepAlive, asyncTimeout, syncTimeout, connectTimeout, responseTimeout, writeBuffer, connectRetry, configCheckSeconds;
+        private int? keepAlive, asyncTimeout, asyncConnectionTimeout, syncTimeout, connectTimeout, responseTimeout, writeBuffer, connectRetry, configCheckSeconds;
 
         private Proxy? proxy;
 
@@ -170,6 +172,11 @@ namespace StackExchange.Redis
         /// Specifies the time in milliseconds that the system should allow for asynchronous operations (defaults to SyncTimeout)
         /// </summary>
         public int AsyncTimeout { get { return asyncTimeout ?? SyncTimeout; } set { asyncTimeout = value; } }
+
+        /// <summary>
+        /// Specifies the time in milliseconds that the system should allow for consecutive asynchronous operation timeouts on a given connection; when it elapses it burns the connection
+        /// </summary>
+        public int AsyncConnectionTimeout { get { return asyncConnectionTimeout.GetValueOrDefault(5000); } set { asyncConnectionTimeout = value; } }
 
         /// <summary>
         /// Indicates whether the connection should be encrypted
@@ -496,6 +503,7 @@ namespace StackExchange.Redis
             Append(sb, OptionKeys.KeepAlive, keepAlive);
             Append(sb, OptionKeys.SyncTimeout, syncTimeout);
             Append(sb, OptionKeys.AsyncTimeout, asyncTimeout);
+            Append(sb, OptionKeys.AsyncConnectionTimeout, asyncConnectionTimeout);
             Append(sb, OptionKeys.AllowAdmin, allowAdmin);
             Append(sb, OptionKeys.Version, defaultVersion);
             Append(sb, OptionKeys.ConnectTimeout, connectTimeout);
@@ -642,6 +650,9 @@ namespace StackExchange.Redis
                             break;
                         case OptionKeys.AsyncTimeout:
                             AsyncTimeout = OptionKeys.ParseInt32(key, value, minValue: 1);
+                            break;
+                        case OptionKeys.AsyncConnectionTimeout:
+                            AsyncConnectionTimeout = OptionKeys.ParseInt32(key, value, minValue: 1);
                             break;
                         case OptionKeys.AllowAdmin:
                             AllowAdmin = OptionKeys.ParseBoolean(key, value);

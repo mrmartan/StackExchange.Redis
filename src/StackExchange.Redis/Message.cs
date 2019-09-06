@@ -689,7 +689,7 @@ namespace StackExchange.Redis
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal void SetWriteTime()
         {
-            if ((Flags & NeedsAsyncTimeoutCheckFlag) != 0)
+            if (NeedsTimeoutCheck())
             {
                 _writeTickCount = Environment.TickCount; // note this might be reset if we resend a message, cluster-moved etc; I'm OK with that
             }
@@ -697,10 +697,11 @@ namespace StackExchange.Redis
         private int _writeTickCount;
         public int GetWriteTime() => Volatile.Read(ref _writeTickCount);
 
+        internal bool NeedsTimeoutCheck() => (Flags & NeedsAsyncTimeoutCheckFlag) != 0;
         private void SetNeedsTimeoutCheck() => Flags |= NeedsAsyncTimeoutCheckFlag;
         internal bool HasAsyncTimedOut(int now, int timeoutMilliseconds, out int millisecondsTaken)
         {
-            if ((Flags & NeedsAsyncTimeoutCheckFlag) != 0)
+            if (NeedsTimeoutCheck())
             {
                 millisecondsTaken = unchecked(now - _writeTickCount); // note: we can't just check "if sent < cutoff" because of wrap-aro
                 if (millisecondsTaken >= timeoutMilliseconds)

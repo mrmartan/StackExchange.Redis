@@ -11,20 +11,23 @@ namespace StackExchange.Redis
 
         partial void OnTrace(string message, string category)
         {
-            Debug.WriteLine(message,
+            System.Diagnostics.Trace.WriteLine(message,
                 ((Environment.TickCount - epoch)).ToString().PadLeft(5, ' ') + "ms on " +
-                Environment.CurrentManagedThreadId + " ~ " + category);
+                Environment.CurrentManagedThreadId + " ~ " + (category ?? "N/A"));
         }
         static partial void OnTraceWithoutContext(string message, string category)
         {
-            Debug.WriteLine(message, Environment.CurrentManagedThreadId + " ~ " + category);
+            System.Diagnostics.Trace.WriteLine(message, Environment.CurrentManagedThreadId + " ~ " + (category ?? "N/A"));
         }
 
         partial void OnTraceLog(LogProxy log, string caller)
         {
-            lock (UniqueId)
+            if (log is object)
             {
-                Trace(log.ToString(), caller); // note that this won't always be useful, but we only do it in debug builds anyway
+                lock (UniqueId)
+                {
+                    Trace(log.ToString(), caller); // note that this won't always be useful, but we only do it in debug builds anyway
+                }
             }
         }
     }

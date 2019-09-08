@@ -76,7 +76,7 @@ namespace StackExchange.Redis
         {
             lastWriteTickCount = lastReadTickCount = Environment.TickCount;
             lastBeatTickCount = 0;
-            consecutiveTimeoutsSinceTickCount = 0;
+            headMessageHasTimeoutSinceTickCount = 0;
             connectionType = bridge.ConnectionType;
             _bridge = new WeakReference(bridge);
             ChannelPrefix = bridge.Multiplexer.RawConfig.ChannelPrefix;
@@ -593,8 +593,8 @@ namespace StackExchange.Redis
             }
         }
 
-        private int consecutiveTimeoutsSinceTickCount;
-        private readonly int consecutiveTimeoutsTresholdMilliseconds = 10000;
+        private int headMessageHasTimeoutSinceTickCount;
+        private readonly int timeoutsTresholdMilliseconds = 10000;
 
         internal void OnBridgeHeartbeat()
         {
@@ -610,10 +610,10 @@ namespace StackExchange.Redis
 
                     var server = bridge?.ServerEndPoint;
 
-                    if (consecutiveTimeoutsSinceTickCount > 0)
+                    if (headMessageHasTimeoutSinceTickCount > 0)
                     {
-                        var millisecondsTaken = unchecked(now - consecutiveTimeoutsSinceTickCount);
-                        if (millisecondsTaken >= consecutiveTimeoutsTresholdMilliseconds)
+                        var millisecondsTaken = unchecked(now - headMessageHasTimeoutSinceTickCount);
+                        if (millisecondsTaken >= timeoutsTresholdMilliseconds)
                         {
                             RecordConnectionFailed(
                                 ConnectionFailureType.SocketFailure,
@@ -624,12 +624,28 @@ namespace StackExchange.Redis
                     }
 
                     var timeout = bridge.Multiplexer.AsyncTimeoutMilliseconds;
+
+                    // messages on the connection are processed in order (single redis instance guarantee)
+                    // so if items on the head of the queue are timed out for a long time
+                    // we assume the Redis server connection is not healthy
+                    // note: the rest of the queue does not matter, if the first item is timing out the rest are either timing out too or will time out
+                    // note: if the server is responding messages on the front of the queue will get consumed - see ReadFromPipe() -> ProcessBuffer() -> MatchResult()
+                    var headMsg = _writtenAwaitingResponse.Peek();
+                    if (headMsg.HasAsyncTimedOut(now, timeout, out var _))
+                    {
+                        bool haveDeltas = headMsg.TryGetPhysicalState(out _, out _, out long sentDelta, out var receivedDelta) && sentDelta >= 0 && receivedDelta >= 0;
+                        if (!haveDeltas || (haveDeltas && receivedDelta == 0)) Interlocked.CompareExchange(ref headMessageHasTimeoutSinceTickCount, now, 0);
+                    }
+                    else
+                    {
+                        Interlocked.Exchange(ref headMessageHasTimeoutSinceTickCount, 0);
+                    }
+
                     foreach (var msg in _writtenAwaitingResponse)
                     {
                         if (msg.HasAsyncTimedOut(now, timeout, out var elapsed))
                         {
                             bool haveDeltas = msg.TryGetPhysicalState(out _, out _, out long sentDelta, out var receivedDelta) && sentDelta >= 0 && receivedDelta >= 0;
-                            if (!haveDeltas || (haveDeltas && receivedDelta == 0)) Interlocked.CompareExchange(ref consecutiveTimeoutsSinceTickCount, now, 0);
 
                             var timeoutEx = ExceptionFactory.Timeout(bridge.Multiplexer, haveDeltas
                                 ? $"Timeout awaiting response (outbound={sentDelta >> 10}KiB, inbound={receivedDelta >> 10}KiB, {elapsed}ms elapsed, timeout is {timeout}ms)"
@@ -637,10 +653,6 @@ namespace StackExchange.Redis
                             bridge.Multiplexer?.OnMessageFaulted(msg, timeoutEx);
                             msg.SetExceptionAndComplete(timeoutEx, bridge); // tell the message that it is doomed
                             bridge.Multiplexer.OnAsyncTimeout();
-                        }
-                        else
-                        {
-                            Interlocked.Exchange(ref consecutiveTimeoutsSinceTickCount, 0);
                         }
                         // note: it is important that we **do not** remove the message unless we're tearing down the socket; that
                         // would disrupt the chain for MatchResult; we just pre-emptively abort the message from the caller's

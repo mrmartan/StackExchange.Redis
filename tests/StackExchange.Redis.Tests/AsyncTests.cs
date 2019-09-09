@@ -57,7 +57,8 @@ namespace StackExchange.Redis.Tests
                 Assert.Equal(1000, opt.AsyncTimeout);
             }
 
-            conn.ConnectionFailed += OnConnectionFailed;
+            ConnectionFailedEventArgs args = null;
+            conn.ConnectionFailed += (s, e) => { args = e; };
 
             await Assert.RaisesAsync<ConnectionFailedEventArgs>((eh) => conn.ConnectionFailed += eh, (eh) => conn.ConnectionFailed -= eh,
                 async () =>
@@ -84,11 +85,14 @@ namespace StackExchange.Redis.Tests
                     }
                 });
 
-            void OnConnectionFailed(object sender, ConnectionFailedEventArgs e)
+            void OnConnectionFailed(ConnectionFailedEventArgs e)
             {
+                Assert.NotNull(e);
                 Assert.Contains("consecutive timeouts treshold reached", e.Exception.InnerException.Message);
                 Writer.WriteLine($"{e.ConnectionType}, {e.FailureType}, {e.EndPoint}, {e.Exception.ToString()}");
             }
+
+            OnConnectionFailed(args);
         }
 
         [Fact]

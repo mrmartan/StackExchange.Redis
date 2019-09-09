@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
 using Xunit.Abstractions;
@@ -40,6 +41,53 @@ namespace StackExchange.Redis.Tests
                 var ex = c.Exception.InnerExceptions.Single();
                 Assert.IsType<RedisConnectionException>(ex);
                 Assert.StartsWith("No connection is available to service this operation: SADD " + key.ToString(), ex.Message);
+            }
+        }
+
+        [Fact]
+        public async Task ConsecutiveAsyncTimeoutsBurnConnectionIfServerUnresponding()
+        {
+            SetExpectedAmbientFailureCount(-1); // this will get messy
+
+            using var conn = Create(syncTimeout: 1000);
+
+            var opt = ConfigurationOptions.Parse(conn.Configuration);
+            if (!Debugger.IsAttached)
+            { // we max the timeouts if a degugger is detected
+                Assert.Equal(1000, opt.AsyncTimeout);
+            }
+
+            conn.ConnectionFailed += OnConnectionFailed;
+
+            await Assert.RaisesAsync<ConnectionFailedEventArgs>((eh) => conn.ConnectionFailed += eh, (eh) => conn.ConnectionFailed -= eh,
+                async () =>
+                {
+                    RedisKey key = Me();
+                    var val = Guid.NewGuid().ToString();
+                    var db = conn.GetDatabase();
+                    await db.StringSetAsync(key, val).ForAwait();
+
+                    Assert.Contains("; async timeouts: 0;", conn.GetStatus());
+
+                    await Task.Delay(1000).ForAwait();
+                    await db.ExecuteAsync("client", "pause", 25000).ForAwait(); // client pause returns immediately
+
+                    using var cts = new CancellationTokenSource(15000);
+                    while (!cts.IsCancellationRequested)
+                    {
+                        try { await db.StringGetAsync(key).ForAwait(); }
+                        catch (Exception e)
+                        {
+                            Writer.WriteLine(e.ToString());
+                        }
+                        await Task.Delay(100).ForAwait();
+                    }
+                });
+
+            void OnConnectionFailed(object sender, ConnectionFailedEventArgs e)
+            {
+                Assert.Contains("consecutive timeouts treshold reached", e.Exception.InnerException.Message);
+                Writer.WriteLine($"{e.ConnectionType}, {e.FailureType}, {e.EndPoint}, {e.Exception.ToString()}");
             }
         }
 

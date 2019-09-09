@@ -630,15 +630,21 @@ namespace StackExchange.Redis
                     // we assume the Redis server connection is not healthy
                     // note: the rest of the queue does not matter, if the first item is timing out the rest are either timing out too or will time out
                     // note: if the server is responding messages on the front of the queue will get consumed - see ReadFromPipe() -> ProcessBuffer() -> MatchResult()
-                    var headMsg = _writtenAwaitingResponse.Peek();
-                    if (headMsg.HasAsyncTimedOut(now, timeout, out var _))
+                    var headMsg = _writtenAwaitingResponse.SkipWhile(m => !m.NeedsTimeoutCheck()).FirstOrDefault();
+                    if (headMsg is object)
                     {
-                        bool haveDeltas = headMsg.TryGetPhysicalState(out _, out _, out long sentDelta, out var receivedDelta) && sentDelta >= 0 && receivedDelta >= 0;
-                        if (!haveDeltas || (haveDeltas && receivedDelta == 0)) Interlocked.CompareExchange(ref headMessageHasTimeoutSinceTickCount, now, 0);
-                    }
-                    else
-                    {
-                        Interlocked.Exchange(ref headMessageHasTimeoutSinceTickCount, 0);
+                        if (headMsg.HasAsyncTimedOut(now, timeout, out var _))
+                        {
+                            bool haveDeltas = headMsg.TryGetPhysicalState(out _, out _, out long sentDelta, out var receivedDelta) && sentDelta >= 0 && receivedDelta >= 0;
+                            if (!haveDeltas || (haveDeltas && receivedDelta == 0))
+                            {
+                                Interlocked.CompareExchange(ref headMessageHasTimeoutSinceTickCount, now, 0);
+                            }
+                        }
+                        else
+                        {
+                            Interlocked.Exchange(ref headMessageHasTimeoutSinceTickCount, 0);
+                        }
                     }
 
                     foreach (var msg in _writtenAwaitingResponse)

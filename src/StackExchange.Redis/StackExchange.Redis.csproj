@@ -13,6 +13,15 @@
     <LangVersion>latest</LangVersion>
     <DefineConstants Condition="'$(TargetFramework)' != 'net461'">$(DefineConstants);VECTOR_SAFE</DefineConstants>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Debug|net461|AnyCPU'">
+    <DefineConstants>DEBUG;TRACE;VERBOSE</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="ConnectionMultiplexer.Tracing.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="ConnectionMultiplexer.Tracing.cs" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Pipelines.Sockets.Unofficial" Version="2.0.22" />

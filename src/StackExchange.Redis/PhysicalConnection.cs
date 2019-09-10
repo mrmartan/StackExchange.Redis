@@ -612,13 +612,16 @@ namespace StackExchange.Redis
 
                     if (headMessageHasTimeoutSinceTickCount > 0)
                     {
+                        Trace($"headMessageHasTimeoutSinceTickCount is {headMessageHasTimeoutSinceTickCount}");
+
                         var millisecondsTaken = unchecked(now - headMessageHasTimeoutSinceTickCount);
                         if (millisecondsTaken >= timeoutsTresholdMilliseconds)
                         {
+                            Trace($"detected consecutive timeouts hold for {millisecondsTaken}");
                             RecordConnectionFailed(
                                 ConnectionFailureType.SocketFailure,
                                 ExceptionFactory.ConnectionFailure(false, ConnectionFailureType.SocketFailure, "consecutive timeouts treshold reached", server));
-                            bridge.Multiplexer?.Trace("too many consecutive timeouts");
+                            
                             return;
                         }
                     }
@@ -633,16 +636,21 @@ namespace StackExchange.Redis
                     var headMsg = _writtenAwaitingResponse.SkipWhile(m => !m.NeedsTimeoutCheck()).FirstOrDefault();
                     if (headMsg is object)
                     {
+                        var msgDesc = headMsg.ToString();
+                        Trace($"checking head timeoutable message {msgDesc}");
                         if (headMsg.HasAsyncTimedOut(now, timeout, out var _))
                         {
                             bool haveDeltas = headMsg.TryGetPhysicalState(out _, out _, out long sentDelta, out var receivedDelta) && sentDelta >= 0 && receivedDelta >= 0;
                             if (!haveDeltas || (haveDeltas && receivedDelta == 0))
                             {
-                                Interlocked.CompareExchange(ref headMessageHasTimeoutSinceTickCount, now, 0);
+                                Trace($"{msgDesc} has timeout and no received delta");
+                                var was = Interlocked.CompareExchange(ref headMessageHasTimeoutSinceTickCount, now, 0);
+                                if (was == 0) Trace($"headMessageHasTimeoutSinceTickCount was 0 and now was set to {now}");
                             }
                         }
                         else
                         {
+                            Trace($"{msgDesc} has no timeout");
                             Interlocked.Exchange(ref headMessageHasTimeoutSinceTickCount, 0);
                         }
                     }

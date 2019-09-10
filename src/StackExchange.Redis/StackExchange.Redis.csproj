@@ -16,12 +16,6 @@
   <PropertyGroup Condition="'$(Configuration)'=='Debug'">
     <DefineConstants>DEBUG;TRACE;VERBOSE</DefineConstants>
   </PropertyGroup>
-  <ItemGroup>
-    <Compile Remove="ConnectionMultiplexer.Tracing.cs" />
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="ConnectionMultiplexer.Tracing.cs" />
-  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Pipelines.Sockets.Unofficial" Version="2.0.22" />

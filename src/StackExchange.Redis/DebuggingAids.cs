@@ -20,13 +20,16 @@ namespace StackExchange.Redis
             System.Diagnostics.Trace.WriteLine(message, Environment.CurrentManagedThreadId + " ~ " + (category ?? "N/A"));
         }
 
-        //partial void OnTraceLog(LogProxy log, string caller)
-        //{
-        //    lock (UniqueId)
-        //    {
-        //        Trace(log.ToString(), caller); // note that this won't always be useful, but we only do it in debug builds anyway
-        //    }
-        //}
+        partial void OnTraceLog(LogProxy log, string caller)
+        {
+            if (log is object)
+            {
+                lock (UniqueId)
+                {
+                    Trace(log.ToString(), caller); // note that this won't always be useful, but we only do it in debug builds anyway
+                }
+            }
+        }
     }
 #endif
 

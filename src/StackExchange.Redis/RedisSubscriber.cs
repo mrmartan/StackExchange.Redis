@@ -380,7 +380,7 @@ namespace StackExchange.Redis
         [Conditional("VERBOSE")]
         internal void OnResurrecting(EndPoint endpoint, ConnectionType connectionType)
         {
-            Resurrecting.Invoke(endpoint, connectionType);
+            Resurrecting?.Invoke(endpoint, connectionType);
         }
         [Conditional("VERBOSE")]
         internal void OnPreTransactionExec(Message message)

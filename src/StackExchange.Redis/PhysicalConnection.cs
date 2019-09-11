@@ -594,7 +594,7 @@ namespace StackExchange.Redis
         }
 
         private int headMessageHasTimeoutSinceTickCount;
-        private readonly int timeoutsTresholdMilliseconds = 10000;
+        private readonly int timeoutsTresholdMilliseconds = 8000;
 
         internal void OnBridgeHeartbeat()
         {
@@ -610,7 +610,7 @@ namespace StackExchange.Redis
 
                     var server = bridge?.ServerEndPoint;
 
-                    if (headMessageHasTimeoutSinceTickCount > 0)
+                    if (headMessageHasTimeoutSinceTickCount != 0)
                     {
                         Trace($"headMessageHasTimeoutSinceTickCount is {headMessageHasTimeoutSinceTickCount}");
 

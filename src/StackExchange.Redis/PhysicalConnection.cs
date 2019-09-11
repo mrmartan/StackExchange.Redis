@@ -52,7 +52,9 @@ namespace StackExchange.Redis
 
         private int failureReported;
 
-        private int lastWriteTickCount, lastReadTickCount, lastBeatTickCount;
+        private int lastWriteTickCount, lastReadTickCount, lastBeatTickCount, headMessageHasTimeoutSinceTickCount;
+
+        private readonly int consecutiveTimeoutsTresholdMilliseconds;
 
         internal void GetBytes(out long sent, out long received)
         {
@@ -79,6 +81,7 @@ namespace StackExchange.Redis
             headMessageHasTimeoutSinceTickCount = 0;
             connectionType = bridge.ConnectionType;
             _bridge = new WeakReference(bridge);
+            consecutiveTimeoutsTresholdMilliseconds = bridge.Multiplexer.RawConfig.AsyncConnectionTimeout;
             ChannelPrefix = bridge.Multiplexer.RawConfig.ChannelPrefix;
             if (ChannelPrefix?.Length == 0) ChannelPrefix = null; // null tests are easier than null+empty
             var endpoint = bridge.ServerEndPoint.EndPoint;
@@ -593,9 +596,6 @@ namespace StackExchange.Redis
             }
         }
 
-        private int headMessageHasTimeoutSinceTickCount;
-        private readonly int timeoutsTresholdMilliseconds = 8000;
-
         internal void OnBridgeHeartbeat()
         {
             var now = Environment.TickCount;
@@ -612,12 +612,11 @@ namespace StackExchange.Redis
 
                     if (headMessageHasTimeoutSinceTickCount != 0)
                     {
-                        Trace($"headMessageHasTimeoutSinceTickCount is {headMessageHasTimeoutSinceTickCount}");
-
                         var millisecondsTaken = unchecked(now - headMessageHasTimeoutSinceTickCount);
-                        if (millisecondsTaken >= timeoutsTresholdMilliseconds)
+
+                        Trace($"head message has timeout since {headMessageHasTimeoutSinceTickCount}; that is for {millisecondsTaken} milliseconds already");
+                        if (millisecondsTaken >= consecutiveTimeoutsTresholdMilliseconds)
                         {
-                            Trace($"detected consecutive timeouts hold for {millisecondsTaken}");
                             RecordConnectionFailed(
                                 ConnectionFailureType.SocketFailure,
                                 ExceptionFactory.ConnectionFailure(false, ConnectionFailureType.SocketFailure, "consecutive timeouts treshold reached", server));
@@ -637,20 +636,20 @@ namespace StackExchange.Redis
                     if (headMsg is object)
                     {
                         var msgDesc = headMsg.ToString();
-                        Trace($"checking head timeoutable message {msgDesc}");
+                        Trace($"{msgDesc} - checking head timeoutable message");
                         if (headMsg.HasAsyncTimedOut(now, timeout, out var _))
                         {
                             bool haveDeltas = headMsg.TryGetPhysicalState(out _, out _, out long sentDelta, out var receivedDelta) && sentDelta >= 0 && receivedDelta >= 0;
                             if (!haveDeltas || (haveDeltas && receivedDelta == 0))
                             {
-                                Trace($"{msgDesc} has timeout and no received delta");
+                                Trace($"{msgDesc} - has timeout and no received delta");
                                 var was = Interlocked.CompareExchange(ref headMessageHasTimeoutSinceTickCount, now, 0);
                                 if (was == 0) Trace($"headMessageHasTimeoutSinceTickCount was 0 and now was set to {now}");
                             }
                         }
                         else
                         {
-                            Trace($"{msgDesc} has no timeout");
+                            Trace($"{msgDesc} - has no timeout");
                             Interlocked.Exchange(ref headMessageHasTimeoutSinceTickCount, 0);
                         }
                     }

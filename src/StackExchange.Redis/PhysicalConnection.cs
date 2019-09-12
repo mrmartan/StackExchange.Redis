@@ -52,7 +52,9 @@ namespace StackExchange.Redis
 
         private int failureReported;
 
-        private int lastWriteTickCount, lastReadTickCount, lastBeatTickCount;
+        private int lastWriteTickCount, lastReadTickCount, lastBeatTickCount, headMessageHasTimeoutSinceTickCount;
+
+        private readonly int consecutiveTimeoutsTresholdMilliseconds;
 
         internal void GetBytes(out long sent, out long received)
         {
@@ -76,8 +78,10 @@ namespace StackExchange.Redis
         {
             lastWriteTickCount = lastReadTickCount = Environment.TickCount;
             lastBeatTickCount = 0;
+            headMessageHasTimeoutSinceTickCount = 0;
             connectionType = bridge.ConnectionType;
             _bridge = new WeakReference(bridge);
+            consecutiveTimeoutsTresholdMilliseconds = bridge.Multiplexer.RawConfig.AsyncConnectionTimeout;
             ChannelPrefix = bridge.Multiplexer.RawConfig.ChannelPrefix;
             if (ChannelPrefix?.Length == 0) ChannelPrefix = null; // null tests are easier than null+empty
             var endpoint = bridge.ServerEndPoint.EndPoint;
@@ -380,7 +384,7 @@ namespace StackExchange.Redis
                             add("Outstanding-Responses", "outstanding", GetSentAwaitingResponseCount().ToString());
                             add("Last-Read", "last-read", (unchecked(now - lastRead) / 1000) + "s ago");
                             add("Last-Write", "last-write", (unchecked(now - lastWrite) / 1000) + "s ago");
-                            if(unansweredWriteTime != 0) add("Unanswered-Write", "unanswered-write", (unchecked(now - unansweredWriteTime) / 1000) + "s ago");
+                            if (unansweredWriteTime != 0) add("Unanswered-Write", "unanswered-write", (unchecked(now - unansweredWriteTime) / 1000) + "s ago");
                             add("Keep-Alive", "keep-alive", bridge.ServerEndPoint?.WriteEverySeconds + "s");
                             add("Previous-Physical-State", "state", oldState.ToString());
                             add("Manager", "mgr", bridge.Multiplexer.SocketManager?.GetState());
@@ -605,12 +609,57 @@ namespace StackExchange.Redis
                     if (bridge == null) return;
 
                     var server = bridge?.ServerEndPoint;
+
+                    if (headMessageHasTimeoutSinceTickCount != 0)
+                    {
+                        var millisecondsTaken = unchecked(now - headMessageHasTimeoutSinceTickCount);
+
+                        Trace($"head message has timeout since {headMessageHasTimeoutSinceTickCount}; that is for {millisecondsTaken} milliseconds already");
+                        if (millisecondsTaken >= consecutiveTimeoutsTresholdMilliseconds)
+                        {
+                            RecordConnectionFailed(
+                                ConnectionFailureType.SocketFailure,
+                                ExceptionFactory.ConnectionFailure(false, ConnectionFailureType.SocketFailure, "consecutive timeouts treshold reached", server));
+                            
+                            return;
+                        }
+                    }
+
                     var timeout = bridge.Multiplexer.AsyncTimeoutMilliseconds;
+
+                    // messages on the connection are processed in order (single redis instance guarantee)
+                    // so if items on the head of the queue are timed out for a long time
+                    // we assume the Redis server connection is not healthy
+                    // note: the rest of the queue does not matter, if the first item is timing out the rest are either timing out too or will time out
+                    // note: if the server is responding messages on the front of the queue will get consumed - see ReadFromPipe() -> ProcessBuffer() -> MatchResult()
+                    var headMsg = _writtenAwaitingResponse.SkipWhile(m => !m.NeedsTimeoutCheck()).FirstOrDefault();
+                    if (headMsg is object)
+                    {
+                        var msgDesc = headMsg.ToString();
+                        Trace($"{msgDesc} - checking head timeoutable message");
+                        if (headMsg.HasAsyncTimedOut(now, timeout, out var _))
+                        {
+                            bool haveDeltas = headMsg.TryGetPhysicalState(out _, out _, out long sentDelta, out var receivedDelta) && sentDelta >= 0 && receivedDelta >= 0;
+                            if (!haveDeltas || (haveDeltas && receivedDelta == 0))
+                            {
+                                Trace($"{msgDesc} - has timeout and no received delta");
+                                var was = Interlocked.CompareExchange(ref headMessageHasTimeoutSinceTickCount, now, 0);
+                                if (was == 0) Trace($"headMessageHasTimeoutSinceTickCount was 0 and now was set to {now}");
+                            }
+                        }
+                        else
+                        {
+                            Trace($"{msgDesc} - has no timeout");
+                            Interlocked.Exchange(ref headMessageHasTimeoutSinceTickCount, 0);
+                        }
+                    }
+
                     foreach (var msg in _writtenAwaitingResponse)
                     {
                         if (msg.HasAsyncTimedOut(now, timeout, out var elapsed))
                         {
                             bool haveDeltas = msg.TryGetPhysicalState(out _, out _, out long sentDelta, out var receivedDelta) && sentDelta >= 0 && receivedDelta >= 0;
+
                             var timeoutEx = ExceptionFactory.Timeout(bridge.Multiplexer, haveDeltas
                                 ? $"Timeout awaiting response (outbound={sentDelta >> 10}KiB, inbound={receivedDelta >> 10}KiB, {elapsed}ms elapsed, timeout is {timeout}ms)"
                                 : $"Timeout awaiting response ({elapsed}ms elapsed, timeout is {timeout}ms)", msg, server);
@@ -940,7 +989,7 @@ namespace StackExchange.Redis
         internal long MaxFlushBytes => _maxFlushBytes;
 #endif
 
-    private static readonly ReadOnlyMemory<byte> NullBulkString = Encoding.ASCII.GetBytes("$-1\r\n"), EmptyBulkString = Encoding.ASCII.GetBytes("$0\r\n\r\n");
+        private static readonly ReadOnlyMemory<byte> NullBulkString = Encoding.ASCII.GetBytes("$-1\r\n"), EmptyBulkString = Encoding.ASCII.GetBytes("$0\r\n\r\n");
 
         private static void WriteUnifiedBlob(PipeWriter writer, byte[] value)
         {
@@ -1432,7 +1481,7 @@ namespace StackExchange.Redis
         internal void GetHeadMessages(out Message now, out Message next)
         {
             now = _activeMessage;
-            lock(_writtenAwaitingResponse)
+            lock (_writtenAwaitingResponse)
             {
                 next = _writtenAwaitingResponse.Count == 0 ? null : _writtenAwaitingResponse.Peek();
             }
@@ -1616,7 +1665,7 @@ namespace StackExchange.Redis
                 if (oversized.IsSingleSegment)
                 {
                     var span = oversized.FirstSpan;
-                    for(int i = 0; i < span.Length; i++)
+                    for (int i = 0; i < span.Length; i++)
                     {
                         if (!(span[i] = TryParseResult(arena, in buffer, ref reader, includeDetailInExceptions, server)).HasValue)
                         {
@@ -1626,7 +1675,7 @@ namespace StackExchange.Redis
                 }
                 else
                 {
-                    foreach(var span in oversized.Spans)
+                    foreach (var span in oversized.Spans)
                     {
                         for (int i = 0; i < span.Length; i++)
                         {
